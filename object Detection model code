@@ -1,0 +1,102 @@
+import torch
+import cv2
+import os
+import csv
+
+# -----------------------------
+# CONFIGURATION
+# -----------------------------
+VIDEO_PATH = r"C:\Users\golla\YOLOv5_Project\yolov5\bd.mp4"   # Input video
+OUTPUT_VIDEO = r"C:\Users\golla\YOLOv5_Project\yolov5\output_video.mp4"  # Output video
+LOG_FILE = r"C:\Users\golla\YOLOv5_Project\yolov5\people_log.csv"        # Log CSV
+PERSON_THRESHOLD = 9  # Alarm if people detected > 9
+TARGET_OBJECT = "person"  # Detect only people
+
+# -----------------------------
+# LOAD YOLOv5 MODEL
+# -----------------------------
+print("Loading YOLOv5 model...")
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+
+# -----------------------------
+# OPEN VIDEO
+# -----------------------------
+cap = cv2.VideoCapture(VIDEO_PATH)
+if not cap.isOpened():
+    print("❌ ERROR: Cannot open video, check path")
+    exit()
+
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Video writer
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (width, height))
+
+# -----------------------------
+# CREATE CSV LOG FILE
+# -----------------------------
+with open(LOG_FILE, mode="w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Frame", "Timestamp (sec)", "People Count", "Overcrowded"])
+
+frame_count = 0
+
+# -----------------------------
+# PROCESS VIDEO
+# -----------------------------
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    timestamp = frame_count / fps  # seconds
+
+    # YOLOv5 expects RGB
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = model(img_rgb)
+
+    # Detections
+    detections = results.pandas().xyxy[0]
+    people = detections[detections['name'] == TARGET_OBJECT]
+    num_people = len(people)
+
+    # Draw detections
+    for _, row in people.iterrows():
+        x1, y1, x2, y2 = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
+        conf = row['confidence']
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"Person {conf:.2f}", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Show alert
+    overcrowded = "YES" if num_people > PERSON_THRESHOLD else "NO"
+    if num_people > PERSON_THRESHOLD:
+        cv2.putText(frame, "🚨 ALERT: Overcrowding!", (20, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
+    # Count display
+    cv2.putText(frame, f"People: {num_people}", (20, height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+    # Save log
+    with open(LOG_FILE, mode="a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([frame_count, round(timestamp, 2), num_people, overcrowded])
+
+    # Write frame
+    out.write(frame)
+    frame_count += 1
+
+    # Show live (optional)
+    cv2.imshow("YOLOv5 Crowd Detection", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+out.release()
+cv2.destroyAllWindows()
+
+print(f"✅ Output video saved at: {OUTPUT_VIDEO}")
+print(f"✅ Log file saved at: {LOG_FILE}")
