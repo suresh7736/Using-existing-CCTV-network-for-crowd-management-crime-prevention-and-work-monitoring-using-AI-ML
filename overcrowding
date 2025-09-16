@@ -1,0 +1,129 @@
+import torch
+import cv2
+import os
+import csv
+from datetime import timedelta
+
+# -----------------------------
+# CONFIGURATION
+# -----------------------------
+VIDEO_PATH = r"C:\Users\golla\YOLOv5_Project\yolov5\bd.mp4"
+OUTPUT_VIDEO = r"C:\Users\golla\YOLOv5_Project\yolov5\output_video.mp4"
+LOG_FILE = r"C:\Users\golla\YOLOv5_Project\yolov5\people_log.csv"
+PERSON_THRESHOLD = 8
+TARGET_OBJECT = "person"
+
+# -----------------------------
+# LOAD YOLOv5 MODEL
+# -----------------------------
+print("Loading YOLOv5 model...")
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+
+# -----------------------------
+# OPEN VIDEO
+# -----------------------------
+cap = cv2.VideoCapture(VIDEO_PATH)
+if not cap.isOpened():
+    print("❌ ERROR: Cannot open video, check path")
+    exit()
+
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Video writer
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (width, height))
+
+# -----------------------------
+# CREATE CSV LOG FILE
+# -----------------------------
+with open(LOG_FILE, mode="w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Frame", "Timestamp (sec)", "Timestamp (HH:MM:SS)", "People Count", "Overcrowded"])
+
+frame_count = 0
+max_people = 0
+total_people = 0
+overcrowding_timestamps = []
+
+# -----------------------------
+# PROCESS VIDEO
+# -----------------------------
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    timestamp_sec = frame_count / fps
+    timestamp_hms = str(timedelta(seconds=int(timestamp_sec)))
+
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = model(img_rgb)
+
+    detections = results.pandas().xyxy[0]
+    people = detections[detections['name'] == TARGET_OBJECT]
+    num_people = len(people)
+
+    # Update stats
+    max_people = max(max_people, num_people)
+    total_people += num_people
+    if num_people > PERSON_THRESHOLD:
+        overcrowding_timestamps.append(timestamp_hms)
+
+    # Draw detections
+    for _, row in people.iterrows():
+        x1, y1, x2, y2 = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
+        conf = row['confidence']
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"Person {conf:.2f}", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Show alert
+    overcrowded = "YES" if num_people > PERSON_THRESHOLD else "NO"
+    if num_people > PERSON_THRESHOLD:
+        cv2.putText(frame, "🚨 ALERT: Overcrowding!", (20, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
+    # Overlay info
+    cv2.putText(frame, f"Time: {timestamp_hms}", (20, height - 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.putText(frame, f"People: {num_people}", (20, height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+    # Save log
+    with open(LOG_FILE, mode="a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([frame_count, round(timestamp_sec, 2), timestamp_hms, num_people, overcrowded])
+
+    # Write frame
+    out.write(frame)
+    frame_count += 1
+
+    # Optional: live display
+    cv2.imshow("YOLOv5 Crowd Detection", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+out.release()
+cv2.destroyAllWindows()
+
+# -----------------------------
+# OVERALL RESULTS
+# -----------------------------
+avg_people = total_people / frame_count if frame_count > 0 else 0
+
+print("\n📊 Overall Results:")
+print(f"Total frames processed: {frame_count}")
+print(f"Maximum people detected in a frame: {max_people}")
+print(f"Average people per frame: {avg_people:.2f}")
+if overcrowding_timestamps:
+    print(f"Timestamps when overcrowding occurred (> {PERSON_THRESHOLD} people):")
+    for ts in overcrowding_timestamps:
+        print(f" - {ts}")
+else:
+    print("No overcrowding detected.")
+
+print(f"\n✅ Output video saved at: {OUTPUT_VIDEO}")
+print(f"✅ Log file saved at: {LOG_FILE}")
